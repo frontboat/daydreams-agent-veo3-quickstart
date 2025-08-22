@@ -12,6 +12,8 @@ export async function POST(req: Request) {
     const body = await req.json();
     const prompt = (body?.prompt as string) || "";
     const model = (body?.model as string) || "imagen-4.0-fast-generate-001";
+    const numberOfImages = body?.numberOfImages || 1;
+    const aspectRatio = body?.aspectRatio || "1:1";
 
     if (!prompt) {
       return NextResponse.json({ error: "Missing prompt" }, { status: 400 });
@@ -21,20 +23,26 @@ export async function POST(req: Request) {
       model,
       prompt,
       config: {
-        aspectRatio: "16:9",
+        aspectRatio,
+        numberOfImages,
       },
     });
 
-    const image = resp.generatedImages?.[0]?.image;
-    if (!image?.imageBytes) {
-      return NextResponse.json({ error: "No image returned" }, { status: 500 });
+    // Handle multiple images
+    const images = resp.generatedImages?.map(img => ({
+      imageBytes: img.image?.imageBytes,
+      mimeType: img.image?.mimeType || "image/png",
+    })).filter(img => img.imageBytes);
+
+    if (!images || images.length === 0) {
+      return NextResponse.json({ error: "No images returned" }, { status: 500 });
     }
 
+    // Return multiple images if generated, or single for backward compatibility
     return NextResponse.json({
-      image: {
-        imageBytes: image.imageBytes,
-        mimeType: image.mimeType || "image/png",
-      },
+      images,
+      // Keep backward compatibility
+      image: images[0],
     });
   } catch (error) {
     console.error("Error generating image:", error);

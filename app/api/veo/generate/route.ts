@@ -24,6 +24,8 @@ export async function POST(req: Request) {
     const model = (form.get("model") as string) || "veo-3.0-generate-preview";
     const negativePrompt = (form.get("negativePrompt") as string) || undefined;
     const aspectRatio = (form.get("aspectRatio") as string) || undefined;
+    const personGeneration = (form.get("personGeneration") as string) || undefined;
+    const numberOfVideos = (form.get("numberOfVideos") as string) || undefined;
 
     const imageFile = form.get("imageFile");
     const imageBase64 = (form.get("imageBase64") as string) || undefined;
@@ -53,6 +55,8 @@ export async function POST(req: Request) {
       config: {
         ...(aspectRatio ? { aspectRatio } : {}),
         ...(negativePrompt ? { negativePrompt } : {}),
+        ...(personGeneration ? { personGeneration } : {}),
+        ...(numberOfVideos ? { numberOfVideos: parseInt(numberOfVideos) } : {}),
       },
     });
 

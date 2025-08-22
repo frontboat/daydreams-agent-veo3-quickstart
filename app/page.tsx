@@ -1,283 +1,275 @@
 "use client";
 
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { Clock } from "lucide-react";
-import Composer from "@/components/ui/Composer";
-import VideoPlayer from "@/components/ui/VideoPlayer";
+import React, { useState, useRef, useEffect } from "react";
+import { Send, Loader2, Brain, Video, Image } from "lucide-react";
+import { sendToAgent } from "@/lib/agent/client";
 
-type VeoOperationName = string | null;
-
-const POLL_INTERVAL_MS = 5000;
-
-const VeoStudio: React.FC = () => {
-  const [prompt, setPrompt] = useState(""); // Video prompt
-  const [negativePrompt, setNegativePrompt] = useState("");
-  const [aspectRatio, setAspectRatio] = useState("16:9");
-  const [selectedModel, setSelectedModel] = useState(
-    "veo-3.0-generate-preview"
-  );
-
-  // Imagen-specific prompt
-  const [imagePrompt, setImagePrompt] = useState("");
-
-  const [imageFile, setImageFile] = useState<File | null>(null);
-  const [imagenBusy, setImagenBusy] = useState(false);
-  const [generatedImage, setGeneratedImage] = useState<string | null>(null); // data URL
-
-  const [operationName, setOperationName] = useState<VeoOperationName>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const videoBlobRef = useRef<Blob | null>(null);
-  const trimmedBlobRef = useRef<Blob | null>(null);
-  const trimmedUrlRef = useRef<string | null>(null);
-  const originalVideoUrlRef = useRef<string | null>(null);
-
-  const [showImageTools, setShowImageTools] = useState(false);
-
-  const canStart = useMemo(() => {
-    if (!prompt.trim()) return false;
-    if (showImageTools && !(imageFile || generatedImage)) return false;
-    return true;
-  }, [prompt, showImageTools, imageFile, generatedImage]);
-
-  const resetAll = () => {
-    setPrompt("");
-    setNegativePrompt("");
-    setAspectRatio("16:9");
-    setImagePrompt("");
-    setImageFile(null);
-    setGeneratedImage(null);
-    setOperationName(null);
-    setIsGenerating(false);
-    setVideoUrl(null);
-    if (videoBlobRef.current) {
-      URL.revokeObjectURL(URL.createObjectURL(videoBlobRef.current));
-      videoBlobRef.current = null;
-    }
-    if (trimmedUrlRef.current) {
-      URL.revokeObjectURL(trimmedUrlRef.current);
-      trimmedUrlRef.current = null;
-    }
-    trimmedBlobRef.current = null;
+interface Message {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: Date;
+  metadata?: {
+    hasVideo?: boolean;
+    hasImage?: boolean;
+    images?: Array<{
+      imageId: string;
+      url?: string; // URL to fetch the image
+      data?: string; // base64 data URL (legacy)
+    }>;
+    videos?: Array<{
+      operationName: string;
+      videoId: string;
+      message: string;
+    }>;
   };
+}
 
-  // Imagen helper
-  const generateWithImagen = useCallback(async () => {
-    setImagenBusy(true);
-    setGeneratedImage(null);
-    try {
-      const resp = await fetch("/api/imagen/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: imagePrompt }),
-      });
-      const json = await resp.json();
-      if (json?.image?.imageBytes) {
-        const dataUrl = `data:${json.image.mimeType};base64,${json.image.imageBytes}`;
-        setGeneratedImage(dataUrl);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setImagenBusy(false);
+export default function ChatInterface() {
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      id: '1',
+      role: 'assistant',
+      content: "Hi! I'm your AI video generation assistant. I can help you create videos, generate images, and manage complex workflows. Try saying things like:\n\n• \"Generate a video of a sunset over mountains\"\n• \"Create an image of a futuristic city\"\n• \"Show me all my videos\"\n• \"Create a workflow that generates an image then uses it for a video\"",
+      timestamp: new Date(),
     }
-  }, [imagePrompt]);
-
-  // Start Veo job
-  const startGeneration = useCallback(async () => {
-    if (!canStart) return;
-    setIsGenerating(true);
-    setVideoUrl(null);
-
-    const form = new FormData();
-    form.append("prompt", prompt);
-    form.append("model", selectedModel);
-    if (negativePrompt) form.append("negativePrompt", negativePrompt);
-    if (aspectRatio) form.append("aspectRatio", aspectRatio);
-
-    if (showImageTools) {
-      if (imageFile) {
-        form.append("imageFile", imageFile);
-      } else if (generatedImage) {
-        const [meta, b64] = generatedImage.split(",");
-        const mime = meta?.split(";")?.[0]?.replace("data:", "") || "image/png";
-        form.append("imageBase64", b64);
-        form.append("imageMimeType", mime);
-      }
-    }
-
-    try {
-      const resp = await fetch("/api/veo/generate", {
-        method: "POST",
-        body: form,
-      });
-      const json = await resp.json();
-      setOperationName(json?.name || null);
-    } catch (e) {
-      console.error(e);
-      setIsGenerating(false);
-    }
-  }, [
-    canStart,
-    prompt,
-    selectedModel,
-    negativePrompt,
-    aspectRatio,
-    showImageTools,
-    imageFile,
-    generatedImage,
   ]);
+  const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [projectId] = useState('default');
+  const [userId] = useState('default-user');
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [agentReady, setAgentReady] = useState(false);
 
-  // Poll operation until done then download
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function poll() {
-      if (!operationName || videoUrl) return;
-      try {
-        const resp = await fetch("/api/veo/operation", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: operationName }),
-        });
-        const fresh = await resp.json();
-        if (fresh?.done) {
-          const fileUri = fresh?.response?.generatedVideos?.[0]?.video?.uri;
-          if (fileUri) {
-            const dl = await fetch("/api/veo/download", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ uri: fileUri }),
-            });
-            const blob = await dl.blob();
-            videoBlobRef.current = blob;
-            const url = URL.createObjectURL(blob);
-            setVideoUrl(url);
-            originalVideoUrlRef.current = url;
-          }
-          setIsGenerating(false);
-          return;
-        }
-      } catch (e) {
-        console.error(e);
-        setIsGenerating(false);
-      } finally {
-        timer = setTimeout(poll, POLL_INTERVAL_MS);
-      }
-    }
-    if (operationName && !videoUrl) {
-      timer = setTimeout(poll, POLL_INTERVAL_MS);
-    }
-    return () => {
-      if (timer) clearTimeout(timer);
+    initializeAgent();
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const initializeAgent = async () => {
+    // Agent runs on server, just mark as ready
+    setAgentReady(true);
+    console.log("Chat interface ready");
+  };
+
+  const addMessage = (message: Omit<Message, 'id' | 'timestamp'>) => {
+    const newMessage: Message = {
+      ...message,
+      id: crypto.randomUUID(),
+      timestamp: new Date(),
     };
-  }, [operationName, videoUrl]);
+    setMessages(prev => [...prev, newMessage]);
+    return newMessage;
+  };
 
-  const onPickImage = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) {
-      setImageFile(f);
-      setGeneratedImage(null);
+  const handleSend = async () => {
+    if (!input.trim() || isLoading || !agentReady) return;
+
+    const userMessage = input.trim();
+    setInput("");
+    setIsLoading(true);
+
+    // Add user message
+    addMessage({ role: 'user', content: userMessage });
+
+    try {
+      // Send message to agent via API
+      const response = await sendToAgent(userMessage, projectId, userId);
+      console.log('Response from agent:', response);
+
+      if (response.success) {
+        // Build the assistant response
+        let assistantResponse = response.message;
+        
+        // Check if we have images to display
+        const hasImages = response.metadata?.images && response.metadata.images.length > 0;
+        
+        // Only add notifications if we don't have the actual content
+        if (!hasImages) {
+          for (const action of response.actions) {
+            if (action.name === 'generate-veo-video') {
+              assistantResponse += "\n🎬 Video generation started...";
+            } else if (action.name === 'generate-imagen-image') {
+              assistantResponse += "\n🖼️ Processing image generation...";
+            }
+          }
+        }
+
+        // Add assistant response with metadata including images
+        addMessage({ 
+          role: 'assistant', 
+          content: assistantResponse.trim(),
+          metadata: response.metadata
+        });
+      } else {
+        throw new Error(response.error || 'Unknown error occurred');
+      }
+
+    } catch (error) {
+      console.error("Error sending message to agent:", error);
+      addMessage({
+        role: 'system',
+        content: `Error: ${error instanceof Error ? error.message : 'Failed to process your request'}`,
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleTrimmedOutput = (blob: Blob) => {
-    trimmedBlobRef.current = blob; // likely webm
-    if (trimmedUrlRef.current) {
-      URL.revokeObjectURL(trimmedUrlRef.current);
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
     }
-    trimmedUrlRef.current = URL.createObjectURL(blob);
-    setVideoUrl(trimmedUrlRef.current);
-  };
-
-  const handleResetTrimState = () => {
-    if (trimmedUrlRef.current) {
-      URL.revokeObjectURL(trimmedUrlRef.current);
-      trimmedUrlRef.current = null;
-    }
-    trimmedBlobRef.current = null;
-    if (originalVideoUrlRef.current) {
-      setVideoUrl(originalVideoUrlRef.current);
-    }
-  };
-
-  const downloadVideo = async () => {
-    const blob = trimmedBlobRef.current || videoBlobRef.current;
-    if (!blob) return;
-    const isTrimmed = !!trimmedBlobRef.current;
-    const filename = isTrimmed ? "veo3_video_trimmed.webm" : "veo3_video.mp4";
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.style.display = "none";
-    link.href = url;
-    link.setAttribute("download", filename);
-    link.setAttribute("rel", "noopener");
-    link.target = "_self";
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(() => {
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    }, 0);
   };
 
   return (
-    <div className="relative min-h-screen w-full text-stone-900">
-      <div className="absolute top-4 left-4 z-20 hidden md:block">
-        <h1 className="text-lg font-semibold text-slate-900/80 backdrop-blur-sm bg-white/20 px-3 py-1 rounded-lg">
-          Veo 3
-        </h1>
-      </div>
-      {/* Center hint or video */}
-      <div className="flex items-center justify-center min-h-screen pb-40 px-4">
-        {!videoUrl &&
-          (isGenerating ? (
-            <div className="text-stone-700 select-none inline-flex items-center gap-2">
-              <Clock className="w-4 h-4 animate-spin" /> Generating Video...
+    <div className="flex flex-col h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+      {/* Header */}
+      <div className="bg-white border-b shadow-sm">
+        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Brain className="w-8 h-8 text-purple-600" />
+            <div>
+              <h1 className="text-xl font-semibold text-gray-900">Veo AI Assistant</h1>
+              <p className="text-xs text-gray-500">Powered by Daydreams + Veo 3 + Imagen</p>
             </div>
-          ) : (
-            <div className="text-stone-400 select-none">
-              Nothing to see here yet.
+          </div>
+          <div className="flex gap-2">
+            <a 
+              href="/agent-dashboard" 
+              className="px-3 py-1.5 text-sm bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors"
+            >
+              Dashboard
+            </a>
+          </div>
+        </div>
+      </div>
+
+      {/* Messages Area */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-4xl mx-auto px-4 py-6 space-y-4">
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div
+                className={`max-w-[70%] rounded-lg px-4 py-3 ${
+                  message.role === 'user'
+                    ? 'bg-purple-600 text-white'
+                    : message.role === 'system'
+                    ? 'bg-red-100 text-red-800 border border-red-200'
+                    : 'bg-white shadow-md border border-gray-100'
+                }`}
+              >
+                {message.role === 'assistant' && (
+                  <div className="flex items-center gap-2 mb-2 text-xs text-gray-500">
+                    <Brain className="w-3 h-3" />
+                    AI Assistant
+                  </div>
+                )}
+                <div className="whitespace-pre-wrap break-words">
+                  {message.content}
+                </div>
+                
+                {/* Display generated images */}
+                {message.metadata?.images && message.metadata.images.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {message.metadata.images.map((image, idx) => (
+                      <div key={image.imageId || idx} className="rounded-lg overflow-hidden border border-gray-200">
+                        <img 
+                          src={image.url || image.data} // Support both URL and legacy data format
+                          alt={`Generated image ${idx + 1}`}
+                          className="w-full h-auto"
+                          style={{ maxHeight: '400px', objectFit: 'contain' }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                {message.metadata?.hasVideo && !message.metadata?.videos && (
+                  <div className="mt-2 flex items-center gap-1 text-xs opacity-75">
+                    <Video className="w-3 h-3" />
+                    Video generation in progress
+                  </div>
+                )}
+                
+                {message.metadata?.videos && message.metadata.videos.length > 0 && (
+                  <div className="mt-2 text-xs opacity-75">
+                    {message.metadata.videos.map((video, idx) => (
+                      <div key={video.videoId || idx} className="flex items-center gap-1">
+                        <Video className="w-3 h-3" />
+                        {video.message}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="text-xs mt-2 opacity-50">
+                  {message.timestamp.toLocaleTimeString()}
+                </div>
+              </div>
             </div>
           ))}
-        {videoUrl && (
-          <div className="w-full max-w-3xl">
-            <VideoPlayer
-              src={videoUrl}
-              onOutputChanged={handleTrimmedOutput}
-              onDownload={downloadVideo}
-              onResetTrim={handleResetTrimState}
-            />
-          </div>
-        )}
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
-      <Composer
-        prompt={prompt}
-        setPrompt={setPrompt}
-        selectedModel={selectedModel}
-        setSelectedModel={setSelectedModel}
-        canStart={canStart}
-        isGenerating={isGenerating}
-        startGeneration={startGeneration}
-        showImageTools={showImageTools}
-        setShowImageTools={setShowImageTools}
-        imagePrompt={imagePrompt}
-        setImagePrompt={setImagePrompt}
-        imagenBusy={imagenBusy}
-        onPickImage={onPickImage}
-        generateWithImagen={generateWithImagen}
-        imageFile={imageFile}
-        generatedImage={generatedImage}
-        resetAll={resetAll}
-      />
+      {/* Input Area */}
+      <div className="border-t bg-white">
+        <div className="max-w-4xl mx-auto px-4 py-4">
+          <div className="flex gap-3">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder={agentReady ? "Ask me to generate videos, images, or create workflows..." : "Initializing agent..."}
+              disabled={!agentReady || isLoading}
+              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-400"
+              rows={1}
+              style={{ minHeight: '48px', maxHeight: '120px' }}
+            />
+            <button
+              onClick={handleSend}
+              disabled={!input.trim() || isLoading || !agentReady}
+              className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Processing
+                </>
+              ) : (
+                <>
+                  <Send className="w-5 h-5" />
+                  Send
+                </>
+              )}
+            </button>
+          </div>
+          <div className="mt-2 text-xs text-gray-500">
+            {agentReady ? (
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                Agent ready - Try: "Generate a video of ocean waves" or "Create an image of a sunset"
+              </span>
+            ) : (
+              <span className="flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Initializing AI agent...
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
-};
-
-export default VeoStudio;
+}
