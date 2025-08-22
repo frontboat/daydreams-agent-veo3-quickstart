@@ -24,6 +24,7 @@ Follow these steps to get the application running locally for development and te
 
 -   Node.js and npm (or yarn/pnpm)
 -   **`GEMINI_API_KEY`**: The application requires a [GEMINI API key](https://aistudio.google.com/app/apikey). Either create a `.env` file in the project root and add your API key: `GEMINI_API_KEY="YOUR_API_KEY"` or set the environment variable in your system.
+-   **`DREAMSROUTER_API_KEY`**: For the AI agent system (get from [Daydreams Router](https://router.daydreams.systems/))
 
 > [!WARNING]  
 > Google Veo 3 and Imagen 4 are both part of the Gemini API Paid tier. You will need to be on the paid tier to use these models.
